@@ -1,53 +1,11 @@
-/* global PouchDB platform emit */
+/* global chrome platform */
 
 var tabalanche = {};
 (function(){
-  var dashboardDesignDoc = {
-    _id: '_design/dashboard',
-    version: 2,
-    views: {
-      by_creation: {
-        map: function(doc) {
-          emit([doc.created, doc._id]);
-        }.toString()
-      },
-      total_tabs: {
-        map: function(doc) {
-          emit(doc._id, doc.tabs.length);
-        }.toString(),
-        reduce: '_sum'
-      }
-    }
-  };
 
-  function ensureCurrentDesignDoc(db, designDoc) {
-    function checkAgainstExistingDesignDoc(existing) {
-
-      // If we have a newer design doc than the current one
-      if (designDoc.version > existing.version) {
-
-        // Note the revision we're clobbering and try the put again
-        designDoc._rev = existing._rev;
-        return ensureCurrentDesignDoc(db, designDoc);
-
-      // If the existing design doc appears to be up to date then
-      // return the DB for stuff like getDB
-      } else return db;
-    }
-
-    return db.put(designDoc).then(function() {
-      // return the DB for stuff like getDB
-      return db;
-    }).catch(function (err) {
-      if (err.name == 'conflict') {
-        return db.get(designDoc._id)
-          .then(checkAgainstExistingDesignDoc);
-      } else throw(err);
-    });
+  function generateId() {
+    return 'tg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   }
-
-  var tabgroups = new PouchDB('tabgroups');
-  var tabgroupsReady = ensureCurrentDesignDoc(tabgroups, dashboardDesignDoc);
 
   function stashTabs(tabs) {
     return platform.currentWindowContext().then(function(store) {
@@ -57,99 +15,212 @@ var tabalanche = {};
         return {
           url: tab.url,
           title: tab.title,
+          icon: tab.favIconUrl
         };
       }
 
-      return tabgroupsReady.then(function() {
-        if (tabs.length > 0) {
-          var tabGroupDoc = {
-            created: stashTime.getTime(),
-            tabs: tabs.map(stashedTab)
-          };
+      if (tabs.length > 0) {
+        var tabGroupDoc = {
+          id: generateId(),
+          created: stashTime.getTime(),
+          tabs: tabs.map(stashedTab)
+        };
 
-          return tabgroups.post(tabGroupDoc).then(function(response) {
-            platform.closeTabs(tabs);
-            var dashboard = platform.extensionURL('dashboard.html');
-            open(dashboard + '#' + response.id, '_blank');
-          });
+        return saveTabGroup(tabGroupDoc).then(function() {
+          platform.closeTabs(tabs);
+          var dashboard = platform.extensionURL('dashboard.html');
+          chrome.tabs.create({url: dashboard + '#' + tabGroupDoc.id});
+          return tabGroupDoc;
+        });
+      } else {
+        throw new Error('No tabs to save');
+      }
+    });
+  }
+
+  function saveTabGroup(tabGroup) {
+    return new Promise(function(resolve, reject) {
+      var data = {};
+      data[tabGroup.id] = tabGroup;
+      chrome.storage.local.set(data, function() {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
         } else {
-          throw new Error('No tabs to save');
+          resolve(tabGroup);
         }
       });
     });
   }
 
+  function getAllTabGroups() {
+    return new Promise(function(resolve, reject) {
+      chrome.storage.local.get(null, function(items) {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          var tabGroups = [];
+          Object.keys(items).forEach(function(key) {
+            if (key.startsWith('tg_')) {
+              tabGroups.push(items[key]);
+            }
+          });
+          // Sort by creation time, newest first (descending)
+          tabGroups.sort(function(a, b) {
+            return b.created - a.created;
+          });
+          resolve(tabGroups);
+        }
+      });
+    });
+  }
+
+  function getSomeTabGroups(startKey, limit) {
+    limit = limit || 5;
+    
+    return getAllTabGroups().then(function(allGroups) {
+      if (!startKey) {
+        // Return first batch
+        return allGroups.slice(0, limit);
+      }
+      
+      // Find the starting point based on startKey [created, _id]
+      var startCreated = startKey[0];
+      var startId = startKey[1];
+      
+      var startIndex = -1;
+      for (var i = 0; i < allGroups.length; i++) {
+        if (allGroups[i].created === startCreated && allGroups[i].id === startId) {
+          startIndex = i;
+          break;
+        }
+      }
+      
+      if (startIndex >= 0) {
+        // Skip the start item and return next batch
+        return allGroups.slice(startIndex + 1, startIndex + 1 + limit);
+      }
+      
+      return [];
+    });
+  }
+
+  function getTabGroup(id) {
+    return new Promise(function(resolve, reject) {
+      chrome.storage.local.get([id], function(result) {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(result[id] || null);
+        }
+      });
+    });
+  }
+
+  function removeTabGroup(id) {
+    return new Promise(function(resolve, reject) {
+      chrome.storage.local.remove([id], function() {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
+
+  function destroyAllTabGroups() {
+    return getAllTabGroups().then(function(tabGroups) {
+      var ids = tabGroups.map(function(tg) { return tg.id; });
+      if (ids.length === 0) {
+        return Promise.resolve();
+      }
+      return new Promise(function(resolve, reject) {
+        chrome.storage.local.remove(ids, function() {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  }
+
+  // Public API - these match the original PouchDB-based API
   tabalanche.stashThisTab = function() {
     return platform.getWindowTabs.highlighted().then(stashTabs);
   };
+
   tabalanche.stashAllTabs = function() {
     return platform.getWindowTabs.all().then(stashTabs);
   };
+
   tabalanche.stashOtherTabs = function() {
     return platform.getWindowTabs.other().then(stashTabs);
   };
+
   tabalanche.stashTabsToTheRight = function() {
     return platform.getWindowTabs.right().then(stashTabs);
   };
 
-  tabalanche.importTabGroup = function importTabGroup(tabGroup, opts) {
+  tabalanche.getAllTabGroups = function() {
+    return getAllTabGroups();
+  };
+
+  tabalanche.getSomeTabGroups = function(startKey) {
+    return getSomeTabGroups(startKey);
+  };
+
+  tabalanche.getTabGroup = function(id) {
+    return getTabGroup(id);
+  };
+
+  tabalanche.removeTabGroup = function(id) {
+    return removeTabGroup(id);
+  };
+
+  tabalanche.importTabGroup = function(tabGroup, opts) {
     opts = opts || {};
-    return tabgroupsReady.then(function() {
-      if (tabGroup._id) {
-        return tabgroups.put({
-          _id: tabGroup._id,
-          created: tabGroup.created,
-          tabs: tabGroup.tabs
+    
+    // Ensure the tabGroup has an ID
+    if (!tabGroup.id && !tabGroup._id) {
+      tabGroup.id = generateId();
+    } else if (tabGroup._id && !tabGroup.id) {
+      // Convert PouchDB _id to our id format
+      tabGroup.id = tabGroup._id;
+      delete tabGroup._id;
+    }
+    
+    // Remove PouchDB-specific fields
+    delete tabGroup._rev;
+    
+    return saveTabGroup(tabGroup);
+  };
+
+  tabalanche.destroyAllTabGroups = function() {
+    return destroyAllTabGroups();
+  };
+
+  // For compatibility with dashboard.js which expects getDB()
+  tabalanche.getDB = function() {
+    return Promise.resolve({
+      put: function(doc) {
+        return saveTabGroup(doc).then(function() {
+          return { rev: 'fake-rev-' + Date.now() };
         });
-      } else {
-        return tabgroups.post({
-          created: tabGroup.created,
-          tabs: tabGroup.tabs
+      },
+      remove: function(doc) {
+        return removeTabGroup(doc.id || doc._id);
+      },
+      get: function(id) {
+        return getTabGroup(id).then(function(group) {
+          if (!group) {
+            throw new Error('Document not found');
+          }
+          return group;
         });
       }
     });
   };
 
-  tabalanche.getAllTabGroups = function() {
-    return tabgroupsReady.then(function () {
-      return tabgroups.query('dashboard/by_creation', {
-        include_docs: true,
-        descending: true
-      }).then(function (response) {
-        return response.rows.map(function (row) {
-          return row.doc;
-        });
-      });
-    });
-  };
-
-  tabalanche.getSomeTabGroups = function(startKey) {
-    var queryOpts = {
-      include_docs: true,
-      descending: true,
-      limit: 5 // TODO: Make configurable or something
-    };
-
-    if (startKey) {
-      queryOpts.startkey = startKey;
-      queryOpts.skip = 1;
-    }
-
-    return tabgroupsReady.then(function () {
-      return tabgroups.query('dashboard/by_creation', queryOpts)
-      .then(function (response) {
-        return response.rows.map(function (row) {
-          return row.doc;
-        });
-      });
-    });
-  };
-
-  tabalanche.getDB = function getDB() {
-    return tabgroupsReady.then();
-  };
-
-  tabalanche.destroyAllTabGroups = function destroyAllTabGroups() {
-    return tabgroups.destroy();
-  };
 })();

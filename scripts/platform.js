@@ -1,7 +1,10 @@
-/* global browser */
+/* global chrome */
 
 var platform = {};
 (function(){
+
+// Chrome compatibility - use chrome API instead of browser API
+var browserAPI = (typeof chrome !== 'undefined') ? chrome : browser;
 
 var optionDefaults = {
   ignorePinnedTabs: true,
@@ -13,51 +16,60 @@ platform.optionDefaults = optionDefaults;
 platform.currentWindowContext = function currentWindowContext() {
   var prefix, preLength;
 
-  // Yes, really. We save window state using document.cookie. That is the
-  // *only mechanism* we have for saving window state. IKR, it's 2015, WTF.
-  // It's this, or have a persistent background page that we query with
-  // postMessage, or try to maintain a window context store using a mechanism
-  // like localStorage that is persistent *across reboots* (which doesn't crash
-  // cleanly and would generally be even crazier than cookies).
-  // See http://discourse.wicg.io/t/cross-window-session-storage/943
-
+  // Note: document.cookie won't work in service worker context
+  // We'll need to use chrome.storage instead for Manifest V3
   function getContext() {
-    var cookies = document.cookie.split(/;\s*/g);
-    for (var i = 0; i < cookies.length; i++) {
-      if (cookies[i].slice(0,preLength) == prefix) {
-        return JSON.parse(decodeURIComponent(cookies[i].slice(preLength)));
-      }
-    }
-    return {};
+    // In service worker, we can't use document.cookie
+    // Return a promise that resolves with stored context
+    return new Promise(function(resolve) {
+      browserAPI.storage.local.get([prefix], function(result) {
+        var context = result[prefix] ? JSON.parse(result[prefix]) : {};
+        resolve(context);
+      });
+    });
   }
 
   function setContext(ctx) {
-    document.cookie = prefix + encodeURIComponent(JSON.stringify(ctx));
+    // In service worker, use chrome.storage instead of document.cookie
+    var data = {};
+    data[prefix] = JSON.stringify(ctx);
+    return browserAPI.storage.local.set(data);
   }
 
   var iface = {get: getContext, set: setContext};
-  return browser.windows.getCurrent({populate: false})
-    .then(function (crWindow) {
-      prefix = 'wins_' + crWindow.id + '=';
+  
+  return new Promise(function(resolve) {
+    browserAPI.windows.getCurrent({populate: false}, function(crWindow) {
+      prefix = 'wins_' + crWindow.id;
       preLength = prefix.length;
-      return iface;
+      resolve(iface);
     });
+  });
 };
 
-// clear window session cookies when the window is closed
-browser.windows.onRemoved.addListener(function (wid) {
-  document.cookie = 'wins_' + wid + '=';
+// clear window session storage when the window is closed
+browserAPI.windows.onRemoved.addListener(function (wid) {
+  var key = 'wins_' + wid;
+  browserAPI.storage.local.remove([key]);
 });
 
 platform.getWindowTabs = {};
 
 function getOptions() {
-  return browser.storage.sync.get(optionDefaults);
+  return new Promise(function(resolve) {
+    browserAPI.storage.sync.get(optionDefaults, function(result) {
+      resolve(result);
+    });
+  });
 }
 
 function queryCurrentWindowTabs (params) {
   params.currentWindow = true;
-  return browser.tabs.query(params);
+  return new Promise(function(resolve) {
+    browserAPI.tabs.query(params, function(tabs) {
+      resolve(tabs);
+    });
+  });
 }
 
 platform.getWindowTabs.all = function getAllWindowTabs() {
@@ -98,28 +110,52 @@ function tabIdMap(tab) {
 }
 
 platform.closeTabs = function closeTabs(tabs) {
-  return browser.tabs.remove(tabs.map(tabIdMap));
+  return new Promise(function(resolve, reject) {
+    browserAPI.tabs.remove(tabs.map(tabIdMap), function() {
+      if (browserAPI.runtime.lastError) {
+        reject(browserAPI.runtime.lastError);
+      } else {
+        resolve();
+      }
+    });
+  });
 };
 
 platform.faviconPath = function faviconPath(url) {
   // TODO: cross-browser-compatible version of this
   // see https://bugzilla.mozilla.org/show_bug.cgi?id=1315616
-  return 'chrome://favicon/' + url;
+  try {
+    var domain = new URL(url).hostname;
+    return 'https://www.google.com/s2/favicons?domain=' + domain;
+  } catch (e) {
+    // Fallback to a generic icon
+    return '/images/default-favicon.png'; // You'll need to add this icon
+  }
 };
 
 platform.extensionURL = function extensionURL(path) {
-  return browser.extension.getURL(path);
+  return browserAPI.runtime.getURL(path);
 };
 
 platform.getOptionsURL = function getOptionsURL() {
   // TODO: Review newer options UI paradigm and revise this
-  return 'chrome://extensions/?options=' + browser.runtime.id;
+  return 'chrome://extensions/?options=' + browserAPI.runtime.id;
 };
 
-platform.openOptionsPage = browser.runtime.openOptionsPage;
+platform.openOptionsPage = function() {
+  return new Promise(function(resolve) {
+    browserAPI.runtime.openOptionsPage(function() {
+      resolve();
+    });
+  });
+};
 
 platform.openBackgroundTab = function openBackgroundTab(url) {
-  return browser.tabs.create({url: url, active: false});
+  return new Promise(function(resolve) {
+    browserAPI.tabs.create({url: url, active: false}, function(tab) {
+      resolve(tab);
+    });
+  });
 };
 
 })();

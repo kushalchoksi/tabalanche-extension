@@ -1,26 +1,30 @@
 {
-  "manifest_version": 2,
-  "name": "Tabalanche",
-  "version": "1.1.0",
-  "icons": { "16": "images/tabalanche-box-16px.png",
-             "48": "images/tabalanche-box-48px.png",
-            "128": "images/tabalanche-box-128px-20pxborder.png" },
+  "manifest_version": 3,
+  "name": "Tabalanche v3",
+  "version": "1.3.0",
+  "icons": {
+    "16": "images/tabalanche-box-16px.png",
+    "48": "images/tabalanche-box-48px.png",
+    "128": "images/tabalanche-box-128px-20pxborder.png"
+  },
   "description": "An extension to stash and snapshot groups of tabs",
-  "browser_action": {
+  "action": {
     "default_icon": {
       "19": "images/tabalanche-box-19px.png",
       "38": "images/tabalanche-box-38px.png"
     },
-    "default_title": "Tabalanche",
+    "default_title": "Tabalanche v3",
     "default_popup": "popup.html"
   },
   "author": "Stuart P. Bentley",
+  "developers": [
+    {
+      "name": "Kushal Choksi",
+      "url": "https://github.com/kushalchoksi"
+    }
+  ],
   "background": {
-    "scripts": [
-      "vendor/pouchdb-5.0.0.js",
-      "scripts/tabalanche.js",
-      "chrome/event-page.js" ],
-    "persistent": false
+    "service_worker": "background.js"
   },
   "commands": {
     "stashThisTab": {
@@ -35,7 +39,7 @@
     "stashTabsToTheRight": {
       "description": "Stash tabs to the right"
     },
-    "_execute_browser_action": {
+    "_execute_action": {
       "suggested_key": {
         "default": "Alt+Shift+T"
       }
@@ -44,12 +48,13 @@
   "homepage_url": "https://www.tabalanche.com/",
   "options_ui": {
     "page": "chrome/options.html",
-    "chrome_style": true
+    "open_in_tab": true
   },
   "permissions": [
     "tabs",
-    "storage",
-    "chrome://favicon/"
+    "storage"
   ],
-  "content_security_policy": "script-src 'self' 'unsafe-eval'; object-src 'self'"
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  }
 }
