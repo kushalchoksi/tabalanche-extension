@@ -17,12 +17,6 @@
     "default_popup": "popup.html"
   },
   "author": "Stuart P. Bentley",
-  "developers": [
-    {
-      "name": "Kushal Choksi",
-      "url": "https://github.com/kushalchoksi"
-    }
-  ],
   "background": {
     "service_worker": "background.js"
   },
